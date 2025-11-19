@@ -10,14 +10,12 @@
 <body>
     <div class="container">
         <header>
-            <h1>📊 Feedback Parser</h1>
-            <p class="subtitle">Analyze Excel feedback data with ease</p>
+            <h1>IPPD Feedback Parser</h1>
         </header>
 
         <main>
             <div class="upload-section">
                 <label for="file-input" class="file-label">
-                    <span class="file-icon">📁</span>
                     <span class="file-text">Choose Excel File</span>
                     <input type="file" id="file-input" accept=".xlsx,.xls" hidden>
                 </label>
@@ -28,31 +26,7 @@
                 <h2>Instructions</h2>
                 <ol>
                     <li>Click "Choose Excel File" to select your Excel file.</li>
-                    <li>The file will be processed based on the following rules:
-                        <ul>
-                            <li><strong>Row 0:</strong> Contains questions (one per column pair).</li>
-                            <li><strong>Row 1 onwards:</strong> Data rows with names and scores.</li>
-                            <li><strong>Column 0:</strong> Ignored.</li>
-                            <li><strong>Before column AR:</strong>
-                                <ul>
-                                    <li>Odd columns (1, 3, 5, ...): Scores.</li>
-                                    <li>Even columns (2, 4, 6, ...): Names.</li>
-                                </ul>
-                            </li>
-                            <li><strong>From column AR onwards:</strong>
-                                <ul>
-                                    <li>Even columns (AR, AT, AV, ...): Feedback sentences.</li>
-                                    <li>Odd columns (AS, AU, AW, ...): Names.</li>
-                                </ul>
-                            </li>
-                            <li><strong>Columns BF-BH:</strong> Scores only (no names), each column is one question.</li>
-                            <li><strong>Column BI:</strong> Sentences only (no names).</li>
-                            <li><strong>Names:</strong> Full names are used for matching/display.</li>
-                            <li><strong>Questions:</strong> The string ' or NA' is ignored from the end if present.</li>
-                            <li><strong>Questions that are identical</strong> after removing ' or NA' are combined.</li>
-                        </ul>
-                    </li>
-                    <li>Results will display the counts of <strong>all unique scores/feedback</strong> given by each person for each question.</li>
+                    <li>Results will display the counts of <strong>all unique scores/feedback</strong> given for each person for each question.</li>
                 </ol>
             </div>
 
