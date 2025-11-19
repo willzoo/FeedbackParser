@@ -140,7 +140,7 @@ function combineSimilarNames(results) {
 }
 
 // Process Excel data
-function processExcelData(data) {
+function processExcelData(data, combineNames = true) {
     if (data.length < 2) {
         throw new Error("Excel file must contain at least 2 rows (Row 0: Questions, Row 1+: Data).");
     }
@@ -335,8 +335,10 @@ function processExcelData(data) {
         }
     }
     
-    // Combine similar names using Levenshtein distance
-    combineSimilarNames(results);
+    // Combine similar names using Levenshtein distance if enabled
+    if (combineNames) {
+        combineSimilarNames(results);
+    }
     
     return { results, scoreSectionQuestions };
 }
@@ -473,8 +475,12 @@ document.getElementById("file-input").addEventListener("change", function(event)
                 row.map(cell => cell !== null && cell !== undefined ? String(cell) : "")
             );
             
+            // Check if combine names checkbox is checked
+            const combineNamesCheckbox = document.getElementById("combine-names-checkbox");
+            const shouldCombineNames = combineNamesCheckbox ? combineNamesCheckbox.checked : true;
+            
             // Process the data
-            const { results, scoreSectionQuestions } = processExcelData(dataAsStrings);
+            const { results, scoreSectionQuestions } = processExcelData(dataAsStrings, shouldCombineNames);
             
             // Display results
             displayResults(results, scoreSectionQuestions);
