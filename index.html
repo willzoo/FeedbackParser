@@ -26,7 +26,7 @@
             <div class="upload-section">
                 <label for="file-input" class="file-label">
                     <span class="file-text">Choose Excel File</span>
-                    <input type="file" id="file-input" accept=".xlsx,.xls" hidden>
+                    <input type="file" id="file-input" accept=".xlsx,.xls,.csv" hidden>
                 </label>
                 <div class="checkbox-container">
                     <label for="combine-names-checkbox">
@@ -40,10 +40,23 @@
             <div class="instructions-section">
                 <h2>Instructions</h2>
                 <ol>
-                    <li>Click "Choose Excel File" to select your Excel file.</li>
+                    <li>Click "Choose Excel or CSV File" to select an Excel workbook or a Qualtrics-style CSV export (three header rows, then responses).</li>
                     <li>Results will display the counts of <strong>all unique scores/feedback</strong> given for each person for each question.</li>
-                    <li>If the tables are combining names of different people, please uncheck the "Combine Similar Names" checkbox and click "Choose Excel File" again.</li>
+                    <li>If the tables are combining names of different people, use <strong>Name groups</strong> (shown after upload, above the results) to split or merge names, or uncheck <strong>Combine Similar Names</strong> (this resets groups from the raw file).</li>
                 </ol>
+            </div>
+
+            <div id="name-combiner-section" class="name-combiner-section" style="display: none;" aria-live="polite">
+                <h2>Name groups</h2>
+                <p class="name-combiner-hint">
+                    Drag a name onto another person&rsquo;s group, or into a group box, to merge feedback for those names.
+                    Drag a name to the strip below to split them into their own group again.
+                    With <strong>Combine Similar Names</strong> checked, groups start from the automatic matcher (toggle the checkbox to reset groups from the file).
+                </p>
+                <div id="name-combiner-workspace" class="name-combiner-workspace"></div>
+                <div id="name-combiner-ungroup" class="name-combiner-ungroup">
+                    Drop here to remove from a group (new solo group)
+                </div>
             </div>
 
             <div id="results-section" class="results-section" style="display: none;">

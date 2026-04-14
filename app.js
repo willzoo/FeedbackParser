@@ -1,3 +1,38 @@
+function normalizeCellValue(cell) {
+    if (cell === null || cell === undefined) {
+        return "";
+    }
+    return String(cell).replace(/^\uFEFF/, "").trim();
+}
+
+function normalizeGrid(jsonData) {
+    return jsonData.map((row) =>
+        Array.isArray(row) ? row.map(normalizeCellValue) : []
+    );
+}
+
+function isQualtricsThreeRowHeaderGrid(data) {
+    if (!data || data.length < 4) {
+        return false;
+    }
+    const marker = normalizeCellValue(data[2] && data[2][0]);
+    return marker.includes("ImportId");
+}
+
+function getQuestionRowAndBodyRows(data) {
+    const normalized = normalizeGrid(data);
+    if (isQualtricsThreeRowHeaderGrid(normalized)) {
+        return {
+            questionRow: normalized[1],
+            bodyRows: normalized.slice(3),
+        };
+    }
+    return {
+        questionRow: normalized[0],
+        bodyRows: normalized.slice(1),
+    };
+}
+
 // Excel column letter to index converter
 function excelColumnToIndex(columnLetters) {
     let result = 0;
@@ -47,102 +82,256 @@ function shouldDropName(name) {
     return upperName === "N/A" || upperName === "NA";
 }
 
+// Lowercase normalization for name similarity (merging ignores capitalization)
+function normalizeNameForComparison(name) {
+    return String(name).toLowerCase();
+}
+
+function lowercaseLetterCount(s) {
+    let n = 0;
+    for (let i = 0; i < s.length; i++) {
+        const c = s[i];
+        if (c >= "a" && c <= "z") {
+            n++;
+        }
+    }
+    return n;
+}
+
+/** Prefer natural casing (e.g. "Caleigh" over "CALEIGH") when lengths match. */
+function pickBetterDisplayName(a, b) {
+    if (a === b) {
+        return a;
+    }
+    const la = lowercaseLetterCount(a);
+    const lb = lowercaseLetterCount(b);
+    if (lb !== la) {
+        return lb > la ? b : a;
+    }
+    if (b.length !== a.length) {
+        return b.length > a.length ? b : a;
+    }
+    return a.localeCompare(b) <= 0 ? a : b;
+}
+
 // Calculate Levenshtein distance with special handling for different length names
 function calculateNameDistance(name1, name2) {
-    const len1 = name1.length;
-    const len2 = name2.length;
-    
+    const n1 = normalizeNameForComparison(name1);
+    const n2 = normalizeNameForComparison(name2);
+    const len1 = n1.length;
+    const len2 = n2.length;
+
     // If one name has X characters and another has X+Y characters,
     // calculate distance between first X characters of both
     if (len1 !== len2) {
         const minLen = Math.min(len1, len2);
-        return levenshteinDistance(name1.substring(0, minLen), name2.substring(0, minLen));
+        return levenshteinDistance(n1.substring(0, minLen), n2.substring(0, minLen));
     }
-    
-    return levenshteinDistance(name1, name2);
+
+    return levenshteinDistance(n1, n2);
 }
 
-// Combine similar names in results
-function combineSimilarNames(results) {
-    // Process each question separately
-    for (const question in results) {
-        const namesData = results[question];
-        
-        // Skip if this is a no-name question
-        if ("__no_name__" in namesData) {
+/**
+ * Star-shaped clusters (same as legacy combine): seed order, each name joins only if distance < 3 from seed.
+ * Returns only groups with length > 1.
+ */
+function findSimilarNameGroupsInQuestion(namesData) {
+    if ("__no_name__" in namesData) {
+        return [];
+    }
+    const names = Object.keys(namesData);
+    if (names.length < 2) {
+        return [];
+    }
+    const nameGroups = [];
+    const processed = new Set();
+
+    for (let i = 0; i < names.length; i++) {
+        if (processed.has(names[i])) {
             continue;
         }
-        
-        const names = Object.keys(namesData);
-        if (names.length < 2) {
-            continue; // Need at least 2 names to compare
-        }
-        
-        // Find groups of similar names
-        const nameGroups = [];
-        const processed = new Set();
-        
-        for (let i = 0; i < names.length; i++) {
-            if (processed.has(names[i])) {
+        const group = [names[i]];
+        processed.add(names[i]);
+        for (let j = i + 1; j < names.length; j++) {
+            if (processed.has(names[j])) {
                 continue;
             }
-            
-            const group = [names[i]];
-            processed.add(names[i]);
-            
-            // Find all names similar to this one
-            for (let j = i + 1; j < names.length; j++) {
-                if (processed.has(names[j])) {
-                    continue;
-                }
-                
-                const distance = calculateNameDistance(names[i], names[j]);
-                if (distance < 3) {
-                    group.push(names[j]);
-                    processed.add(names[j]);
-                }
-            }
-            
-            if (group.length > 1) {
-                nameGroups.push(group);
+            const distance = calculateNameDistance(names[i], names[j]);
+            if (distance < 3) {
+                group.push(names[j]);
+                processed.add(names[j]);
             }
         }
-        
-        // Combine names in each group
-        for (const group of nameGroups) {
-            // Sort group to ensure consistent ordering
-            group.sort();
-            
-            // Create combined name: (First name)/(Next name)/(Next name)
-            const combinedName = group.join('/');
-            
-            // Merge all data from group members into combined name
-            const combinedData = {};
-            for (const name of group) {
-                const nameData = namesData[name];
-                for (const key in nameData) {
-                    if (combinedData[key]) {
-                        combinedData[key] += nameData[key];
-                    } else {
-                        combinedData[key] = nameData[key];
-                    }
-                }
-                // Remove original name
-                delete namesData[name];
-            }
-            
-            // Add combined name with merged data
-            namesData[combinedName] = combinedData;
+        if (group.length > 1) {
+            nameGroups.push(group);
         }
     }
-    
-    return results;
+    return nameGroups;
 }
 
-// Process Excel data
-function processExcelData(data, combineNames = true) {
-    if (data.length < 2) {
-        throw new Error("Excel file must contain at least 2 rows (Row 0: Questions, Row 1+: Data).");
+/** Display label for a set of names (case-collapse + slash for distinct spellings). */
+function formatMergedDisplayNameFromMembers(members) {
+    const group = [...members].sort(
+        (a, b) =>
+            normalizeNameForComparison(a).localeCompare(normalizeNameForComparison(b)) ||
+            a.localeCompare(b)
+    );
+    const byLower = new Map();
+    for (const name of group) {
+        const key = normalizeNameForComparison(name);
+        const prev = byLower.get(key);
+        if (!prev) {
+            byLower.set(key, name);
+        } else {
+            byLower.set(key, pickBetterDisplayName(prev, name));
+        }
+    }
+    return [...byLower.keys()]
+        .sort((a, b) => a.localeCompare(b))
+        .map((k) => byLower.get(k))
+        .join("/");
+}
+
+function collectAllPersonNames(results) {
+    const set = new Set();
+    for (const question of Object.keys(results)) {
+        const namesData = results[question];
+        for (const name of Object.keys(namesData)) {
+            if (name !== "__no_name__") {
+                set.add(name);
+            }
+        }
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+}
+
+class UnionFind {
+    constructor(elements) {
+        this.parent = new Map();
+        for (const e of elements) {
+            this.parent.set(e, e);
+        }
+    }
+    find(x) {
+        const p = this.parent.get(x);
+        if (p === undefined) {
+            return x;
+        }
+        if (p !== x) {
+            this.parent.set(x, this.find(p));
+        }
+        return this.parent.get(x);
+    }
+    union(a, b) {
+        if (!this.parent.has(a) || !this.parent.has(b)) {
+            return;
+        }
+        const ra = this.find(a);
+        const rb = this.find(b);
+        if (ra !== rb) {
+            this.parent.set(rb, ra);
+        }
+    }
+    getComponents() {
+        const rootToMembers = new Map();
+        for (const x of this.parent.keys()) {
+            const r = this.find(x);
+            if (!rootToMembers.has(r)) {
+                rootToMembers.set(r, []);
+            }
+            rootToMembers.get(r).push(x);
+        }
+        return [...rootToMembers.values()];
+    }
+}
+
+/** Partition of all person names: either one chip each or union of per-question similarity groups. */
+function buildInitialNameGroups(rawResults, useSimilarityAlgo) {
+    const allNames = collectAllPersonNames(rawResults);
+    if (allNames.length === 0) {
+        return [];
+    }
+    if (!useSimilarityAlgo) {
+        return allNames.map((n) => [n]);
+    }
+    const uf = new UnionFind(allNames);
+    for (const question of Object.keys(rawResults)) {
+        const groups = findSimilarNameGroupsInQuestion(rawResults[question]);
+        for (const g of groups) {
+            for (let k = 1; k < g.length; k++) {
+                uf.union(g[0], g[k]);
+            }
+        }
+    }
+    return uf
+        .getComponents()
+        .map((g) => g.sort((a, b) => a.localeCompare(b)))
+        .sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+function deepCloneResults(obj) {
+    return JSON.parse(JSON.stringify(obj));
+}
+
+function mergeQuestionBucketsByLabel(namesData, nameToLabel) {
+    const newData = {};
+    if (namesData.__no_name__) {
+        newData.__no_name__ = { ...namesData.__no_name__ };
+    }
+    for (const [name, counts] of Object.entries(namesData)) {
+        if (name === "__no_name__") {
+            continue;
+        }
+        const label = nameToLabel.has(name) ? nameToLabel.get(name) : name;
+        if (!newData[label]) {
+            newData[label] = {};
+        }
+        for (const [k, v] of Object.entries(counts)) {
+            newData[label][k] = (newData[label][k] || 0) + v;
+        }
+    }
+    return newData;
+}
+
+/** Apply a global partition of names to all questions (merged display keys). */
+function applyGroupsToResults(rawResults, groups) {
+    const out = deepCloneResults(rawResults);
+    const nameToLabel = new Map();
+    for (const members of groups) {
+        if (!members || members.length === 0) {
+            continue;
+        }
+        const label = formatMergedDisplayNameFromMembers(members);
+        for (const m of members) {
+            nameToLabel.set(m, label);
+        }
+    }
+    for (const question of Object.keys(out)) {
+        out[question] = mergeQuestionBucketsByLabel(out[question], nameToLabel);
+    }
+    return out;
+}
+
+function wrapNameGroupsWithStableIds(groups2d) {
+    return groups2d.map((members) => ({
+        id: crypto.randomUUID(),
+        members: [...members],
+    }));
+}
+
+function nameGroupsToMemberArrays(groups) {
+    return groups.map((g) => [...g.members]);
+}
+
+// Process Excel or Qualtrics CSV export data (raw person keys; grouping is applied separately)
+function processExcelData(data) {
+    const { questionRow, bodyRows } = getQuestionRowAndBodyRows(data);
+
+    if (!questionRow || questionRow.length === 0) {
+        throw new Error("No header row found. Check the file format.");
+    }
+    if (bodyRows.length === 0) {
+        throw new Error("No data rows found after the header.");
     }
 
     // Column AR is where the pattern changes
@@ -154,14 +343,13 @@ function processExcelData(data, combineNames = true) {
     const BH_COLUMN_INDEX = excelColumnToIndex("BH"); // 59 (0-based)
     const BI_COLUMN_INDEX = excelColumnToIndex("BI"); // 60 (0-based)
     
-    // 1. Identify Questions (Row index 0)
-    const questionRow = data[0];
+    // 1. Identify Questions (legacy Excel: row 0; Qualtrics CSV: row 1 after short codes + ImportId row)
     const questionMap = {}; // Maps data_col_index -> {question: string, sectionType: string}
     const suffixToIgnore = " or NA";
     
     // Process columns before AR: Odd columns (1, 3, 5, ...) have questions
     for (let scoreCol = 1; scoreCol < Math.min(AR_COLUMN_INDEX, questionRow.length); scoreCol += 2) {
-        const fullQuestion = (questionRow[scoreCol] || "").toString().trim();
+        const fullQuestion = normalizeCellValue(questionRow[scoreCol]);
         
         if (fullQuestion) {
             // RULE: Ignore the string " or NA" from the end if it appears
@@ -184,7 +372,7 @@ function processExcelData(data, combineNames = true) {
             continue;
         }
         
-        const fullQuestion = (questionRow[feedbackCol] || "").toString().trim();
+        const fullQuestion = normalizeCellValue(questionRow[feedbackCol]);
         
         if (fullQuestion) {
             // RULE: For AR and after, remove "or NA " (with trailing space) from anywhere in the string
@@ -204,7 +392,7 @@ function processExcelData(data, combineNames = true) {
     // These are after AR, so use "or NA " removal rule
     for (const scoreOnlyCol of [BF_COLUMN_INDEX, BG_COLUMN_INDEX, BH_COLUMN_INDEX]) {
         if (scoreOnlyCol < questionRow.length) {
-            const fullQuestion = (questionRow[scoreOnlyCol] || "").toString().trim();
+            const fullQuestion = normalizeCellValue(questionRow[scoreOnlyCol]);
             
             if (fullQuestion) {
                 // RULE: For AR and after, remove "or NA " (with trailing space) from anywhere in the string
@@ -224,7 +412,7 @@ function processExcelData(data, combineNames = true) {
     // Process BI column: Sentences only (no names)
     // This is after AR, so use "or NA " removal rule
     if (BI_COLUMN_INDEX < questionRow.length) {
-        const fullQuestion = (questionRow[BI_COLUMN_INDEX] || "").toString().trim();
+        const fullQuestion = normalizeCellValue(questionRow[BI_COLUMN_INDEX]);
         
         if (fullQuestion) {
             // RULE: For AR and after, remove "or NA " (with trailing space) from anywhere in the string
@@ -241,7 +429,7 @@ function processExcelData(data, combineNames = true) {
     }
     
     if (Object.keys(questionMap).length === 0) {
-        throw new Error("No questions found in row 0. Check Excel format.");
+        throw new Error("No questions found in the question header row. Check the file format.");
     }
     
     // Initialize the nested result dictionary
@@ -252,9 +440,12 @@ function processExcelData(data, combineNames = true) {
     const scoreSectionQuestions = new Set();
     const validScores = new Set(['C', 'D', 'E']);
     
-    // 2. Process Data Rows (starting from index 1)
-    for (let rowIndex = 1; rowIndex < data.length; rowIndex++) {
-        const row = data[rowIndex];
+    // 2. Process data rows (legacy Excel: from row 1; Qualtrics CSV: from row 3)
+    for (let rowIndex = 0; rowIndex < bodyRows.length; rowIndex++) {
+        const row = bodyRows[rowIndex];
+        if (!row || row.length === 0 || !row.some((cell) => normalizeCellValue(cell) !== "")) {
+            continue;
+        }
         const maxCol = row.length - 1;
         
         // Process each question column
@@ -278,7 +469,7 @@ function processExcelData(data, combineNames = true) {
             
             if (sectionType === "score_only") {
                 // BF-BH columns: Scores only, no names
-                const score = (row[dataCol] || "").toString().trim();
+                const score = normalizeCellValue(row[dataCol]);
                 
                 if (score) {
                     // Use special key "__no_name__" for no-name columns
@@ -289,7 +480,7 @@ function processExcelData(data, combineNames = true) {
                 }
             } else if (sectionType === "sentence_only") {
                 // BI column: Sentences only, no names
-                const sentence = (row[dataCol] || "").toString().trim();
+                const sentence = normalizeCellValue(row[dataCol]);
                 
                 if (sentence) {
                     // Use special key "__no_name__" for no-name columns
@@ -304,8 +495,9 @@ function processExcelData(data, combineNames = true) {
                 const feedbackCol = dataCol; // Feedback is in this even column
                 
                 // Retrieve and clean data
-                const name = (nameCol >= 0 && nameCol < row.length ? row[nameCol] : "").toString().trim();
-                const feedback = (feedbackCol < row.length ? row[feedbackCol] : "").toString().trim();
+                const name = nameCol >= 0 && nameCol < row.length ? normalizeCellValue(row[nameCol]) : "";
+                const feedback =
+                    feedbackCol < row.length ? normalizeCellValue(row[feedbackCol]) : "";
                 
                 // Validation and Aggregation - drop N/A or NA names
                 if (name && feedback && !shouldDropName(name)) {
@@ -321,8 +513,8 @@ function processExcelData(data, combineNames = true) {
                 const nameCol = scoreCol + 1; // Name is in the next even column
                 
                 // Retrieve and clean data
-                const name = (nameCol < row.length ? row[nameCol] : "").toString().trim();
-                const score = (scoreCol < row.length ? row[scoreCol] : "").toString().trim().toUpperCase();
+                const name = nameCol < row.length ? normalizeCellValue(row[nameCol]) : "";
+                const score = (scoreCol < row.length ? normalizeCellValue(row[scoreCol]) : "").toUpperCase();
                 
                 // Validation and Aggregation - only count C, D, E, and drop N/A or NA names
                 if (name && score && validScores.has(score) && !shouldDropName(name)) {
@@ -333,11 +525,6 @@ function processExcelData(data, combineNames = true) {
                 }
             }
         }
-    }
-    
-    // Combine similar names using Levenshtein distance if enabled
-    if (combineNames) {
-        combineSimilarNames(results);
     }
     
     return { results, scoreSectionQuestions };
@@ -441,6 +628,162 @@ function displayResults(resultsData, scoreSectionQuestions) {
     resultsSection.style.display = "block";
 }
 
+/** @type {{ rawResults: object, scoreSectionQuestions: Set, groups: { id: string, members: string[] }[] } | null} */
+let parserState = null;
+
+function refreshResultsFromGroups() {
+    if (!parserState) {
+        return;
+    }
+    const merged = applyGroupsToResults(
+        parserState.rawResults,
+        nameGroupsToMemberArrays(parserState.groups)
+    );
+    displayResults(merged, parserState.scoreSectionQuestions);
+}
+
+function removeNameFromAllGroups(name) {
+    for (const g of parserState.groups) {
+        const i = g.members.indexOf(name);
+        if (i >= 0) {
+            g.members.splice(i, 1);
+        }
+    }
+    parserState.groups = parserState.groups.filter((g) => g.members.length > 0);
+}
+
+function moveNameIntoGroupById(name, targetGroupId) {
+    if (!parserState) {
+        return;
+    }
+    removeNameFromAllGroups(name);
+    const target = parserState.groups.find((g) => g.id === targetGroupId);
+    if (target) {
+        target.members.push(name);
+        target.members.sort((a, b) => a.localeCompare(b));
+    } else {
+        parserState.groups.push({
+            id: crypto.randomUUID(),
+            members: [name],
+        });
+    }
+}
+
+function moveNameToNewSingleton(name) {
+    if (!parserState) {
+        return;
+    }
+    removeNameFromAllGroups(name);
+    parserState.groups.push({
+        id: crypto.randomUUID(),
+        members: [name],
+    });
+}
+
+function onNameChipDragStart(e) {
+    const name = e.target.getAttribute("data-name");
+    if (!name) {
+        return;
+    }
+    e.dataTransfer.setData("application/x-feedback-parser-name", name);
+    e.dataTransfer.effectAllowed = "move";
+    e.target.classList.add("name-chip--dragging");
+}
+
+function onNameChipDragEnd(e) {
+    e.target.classList.remove("name-chip--dragging");
+}
+
+function renderNameCombiner() {
+    const section = document.getElementById("name-combiner-section");
+    const workspace = document.getElementById("name-combiner-workspace");
+    if (!section || !workspace) {
+        return;
+    }
+    if (!parserState || collectAllPersonNames(parserState.rawResults).length === 0) {
+        section.style.display = "none";
+        workspace.innerHTML = "";
+        return;
+    }
+    section.style.display = "block";
+    workspace.innerHTML = "";
+
+    parserState.groups.forEach((group) => {
+        const box = document.createElement("div");
+        box.className = "name-group";
+        box.dataset.groupId = group.id;
+        box.addEventListener("dragover", (ev) => {
+            ev.preventDefault();
+            ev.dataTransfer.dropEffect = "move";
+        });
+        box.addEventListener("drop", (ev) => {
+            ev.preventDefault();
+            const name = ev.dataTransfer.getData("application/x-feedback-parser-name");
+            if (!name || !parserState) {
+                return;
+            }
+            moveNameIntoGroupById(name, group.id);
+            renderNameCombiner();
+            refreshResultsFromGroups();
+        });
+
+        group.members.forEach((name) => {
+            const chip = document.createElement("span");
+            chip.className = "name-chip";
+            chip.textContent = name;
+            chip.setAttribute("data-name", name);
+            chip.setAttribute("draggable", "true");
+            chip.addEventListener("dragstart", onNameChipDragStart);
+            chip.addEventListener("dragend", onNameChipDragEnd);
+            box.appendChild(chip);
+        });
+        workspace.appendChild(box);
+    });
+}
+
+function wireNameCombinerDropZone() {
+    const ungroup = document.getElementById("name-combiner-ungroup");
+    if (!ungroup || ungroup.dataset.wired === "1") {
+        return;
+    }
+    ungroup.dataset.wired = "1";
+    ungroup.addEventListener("dragover", (ev) => {
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = "move";
+        ungroup.classList.add("name-combiner-ungroup--active");
+    });
+    ungroup.addEventListener("dragleave", () => {
+        ungroup.classList.remove("name-combiner-ungroup--active");
+    });
+    ungroup.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        ungroup.classList.remove("name-combiner-ungroup--active");
+        const name = ev.dataTransfer.getData("application/x-feedback-parser-name");
+        if (!name || !parserState) {
+            return;
+        }
+        moveNameToNewSingleton(name);
+        renderNameCombiner();
+        refreshResultsFromGroups();
+    });
+}
+
+wireNameCombinerDropZone();
+
+const combineNamesCheckboxEl = document.getElementById("combine-names-checkbox");
+if (combineNamesCheckboxEl) {
+    combineNamesCheckboxEl.addEventListener("change", function () {
+        if (!parserState) {
+            return;
+        }
+        const useSimilarity = combineNamesCheckboxEl.checked;
+        const initialGroups = buildInitialNameGroups(parserState.rawResults, useSimilarity);
+        parserState.groups = wrapNameGroupsWithStableIds(initialGroups);
+        renderNameCombiner();
+        refreshResultsFromGroups();
+    });
+}
+
 // File input handler
 document.getElementById("file-input").addEventListener("change", function(event) {
     const file = event.target.files[0];
@@ -475,18 +818,31 @@ document.getElementById("file-input").addEventListener("change", function(event)
                 row.map(cell => cell !== null && cell !== undefined ? String(cell) : "")
             );
             
-            // Check if combine names checkbox is checked
             const combineNamesCheckbox = document.getElementById("combine-names-checkbox");
-            const shouldCombineNames = combineNamesCheckbox ? combineNamesCheckbox.checked : true;
-            
-            // Process the data
-            const { results, scoreSectionQuestions } = processExcelData(dataAsStrings, shouldCombineNames);
-            
-            // Display results
-            displayResults(results, scoreSectionQuestions);
-            
+            const useSimilarity = combineNamesCheckbox ? combineNamesCheckbox.checked : true;
+
+            const { results, scoreSectionQuestions } = processExcelData(dataAsStrings);
+            const initialGroups = buildInitialNameGroups(results, useSimilarity);
+            parserState = {
+                rawResults: results,
+                scoreSectionQuestions,
+                groups: wrapNameGroupsWithStableIds(initialGroups),
+            };
+
+            renderNameCombiner();
+            refreshResultsFromGroups();
+
             statusDiv.textContent = `Successfully processed: ${file.name}`;
         } catch (error) {
+            parserState = null;
+            const combinerSection = document.getElementById("name-combiner-section");
+            if (combinerSection) {
+                combinerSection.style.display = "none";
+            }
+            const combinerWorkspace = document.getElementById("name-combiner-workspace");
+            if (combinerWorkspace) {
+                combinerWorkspace.innerHTML = "";
+            }
             statusDiv.textContent = `Error: ${error.message}`;
             console.error("Processing Error:", error);
             alert(`An error occurred during processing: ${error.message}`);
